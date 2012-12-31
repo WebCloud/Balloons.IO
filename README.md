@@ -1,9 +1,10 @@
-# Balloons.IO
+Balloons.IO
+===========
 
 Balloons.IO is a web multi-room chat server and client ready to use.
 It’s build with the help of node.JS, Express, Socket.IO and Redis. [Follow us on twitter][]
 
-  [Follow us on twitter]: http://twitter.com/gravityonmars
+  [Follow us on twitter]: https://twitter.com/balloonsio
  
  ![image][]
   [image]: http://www.gravityonmars.com/wp-content/themes/gom3/images/projects/balloons-io/app-1.png
@@ -17,28 +18,54 @@ sites do much better than what we could do ourselves:
 
 ### Requirements
 
--   [node.JS]: http://nodejs.org
--		[Redis-server]: http://redis.io
+-   [node.JS](http://nodejs.org)
+-		[Redis-server](http://redis.io)
+
+
+### Install Redis
+
+    wget http://redis.googlecode.com/files/redis-2.4.17.tar.gz
+    tar xvf redis-2.4.17.tar.gz
+    cd redis-2.4.17
+    make && make install
+
+Start Redis
+
+`./redis-server ./redis.conf`
+
+
+### Install Balloons.IO
 
 If you have these 2 tools installed, go to terminal and type:
 
-`npm install`
+    git clone https://github.com/gravityonmars/Balloons.IO.git
+    cd Balloons.IO
+    npm install
+    mv config.sample.json config.json
 
-Balloons uses easy-OAuth for authentication with Twitter. For now, this is the only authentication method we provide.
+Then, edit config.json with your favorite text editor and add Facebook & Twitter keys.
 
-To set up Balloons with Twitter follow these few steps:
-
-* Copy 'config.sample.json' to 'config.json'.
-* Log in with your account at https://dev.twitter.com/. 
-* Create a new application (https://dev.twitter.com/apps/new) and copy 
+To allow Sign In with Twitter: [Create a new application](https://dev.twitter.com/apps/new) and copy 
 the keys that Twitter gives you into 'config.json'.
-* Update the callback url to the one you provided to Twitter.
-* Go to terminal and run `node balloons`.
 
-Point your browser to `http://127.0.0.1:6789`.
-(You can also change the port from 'config.json')
+To allow Sign In with Facebook: [Create a new application](https://developers.facebook.com/apps) and copy the keys Facebook gives you into 'config.json'
+
+Go to terminal and run `node balloons`.
+
+Point your browser to `http://127.0.0.1:6789` (You can also change the port from 'config.json')
+
+Balloons uses [PassportJS](http://passportjs.org) for authentication with Twitter and Facebook.
 
 Enjoy!
+
+
+
+
+
+
+
+
+
 
 
 ## License 

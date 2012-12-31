@@ -3,24 +3,26 @@
  */
 
 var express = require('express')
-  , sio = require('socket.io')
-  , easyoauth = require('easy-oauth')
-  , redis = require('redis')
-  , connect = require('express/node_modules/connect')
-  , parseCookie = connect.utils.parseCookie
-  , RedisStore = require('connect-redis')(express)
-  , sessionStore = new RedisStore
+  , http = require('http')
+  , passport = require('passport')
   , config = require('./config.json')
-  , utils = require('./utils')
-  , fs = require('fs')
-  , init = require('./init');
-
+  , init = require('./init')
+  , redis = require('redis')
+  , RedisStore = require('connect-redis')(express);
 
 /*
  * Instantiate redis
  */
 
-var client = redis.createClient();
+if (process.env.REDISTOGO_URL) {
+  var rtg   = require('url').parse(process.env.REDISTOGO_URL);
+  var client = exports.client  = redis.createClient(rtg.port, rtg.hostname);
+  client.auth(rtg.auth.split(':')[1]); // auth 1st part is username and 2nd is password separated by ":"
+} else {
+  var client = exports.client  = redis.createClient();
+}
+
+var sessionStore = exports.sessionStore = new RedisStore({client: client});
 
 /*
  * Clean db and create folder
@@ -29,228 +31,58 @@ var client = redis.createClient();
 init(client);
 
 /*
+ * Passportjs auth strategy
+ */
+
+require('./strategy');
+
+/*
  * Create and config server
  */
 
-var app = express.createServer();
+var app = exports.app = express();
 
 app.configure(function() {
+  app.set('port', process.env.PORT || config.app.port || 6789);
   app.set('view engine', 'jade'); 
   app.set('views', __dirname + '/views/themes/' + config.theme.name);
   app.use(express.static(__dirname + '/public'));
   app.use(express.bodyParser());
-  app.use(express.cookieParser());
+  app.use(express.cookieParser(config.session.secret));
   app.use(express.session({
-    secret: config.session.secret,
     key: "balloons",
     store: sessionStore
   }));
-  app.use(easyoauth(config.auth));
+  app.use(passport.initialize());
+  app.use(passport.session());
   app.use(app.router);
 });
-
 
 /*
  * Routes
  */
 
-/*
- * Homepage
- */
-
-app.get('/', function(req, res, next) {
-  req.authenticate(['oauth'], function(error, authenticated){ 
-    if(authenticated){
-      client.hmset(
-          'users:' + req.getAuthDetails().user.username
-        , req.getAuthDetails().user
-      );
-      res.redirect('/rooms/list');
-    }
-    else{
-      res.render('index');
-    }
-  });
-});
+require('./routes');
 
 /*
- * Rooms list
+ * Web server
  */
 
-app.get('/rooms/list', utils.restrict, function(req, res) {
-  client.smembers('balloons:public:rooms', function(err, rooms) {
-    res.render('room_list', { rooms: rooms });
-  });
+exports.server = http.createServer(app).listen(app.get('port'), function() {
+  console.log('Balloons.io started on port %d', app.get('port'));
 });
-
-/*
- * Create a rooom
- */
-
-app.post('/create', utils.restrict, utils.validRoomName, function(req, res) {
-  client.hgetall('rooms:' + req.body.room_name + ':info', function(err, room) {
-    if(room && Object.keys(room).length) 
-        res.redirect( '/rooms/' + room.name );
-    else
-        utils.createRoom(req, res, client, room);
-  });
-});
-
-/*
- * Join a room
- */
-
-app.get('/rooms/:id', utils.restrict, function(req, res) {
-  utils.isValidRoom(req, res, client, function(room) {
-    utils.getUsersInRoom(req, res, client, room, function(users) {
-      utils.getPublicRooms(client, function(rooms) {
-        utils.getUserStatus(req.getAuthDetails().user.usarname, client, function(status) {
-          utils.enterRoom(req, res, room, users, rooms, status);
-        })
-      })
-    });
-  });
-});
-
 
 /*
  * Socket.io
  */
 
-var io = sio.listen(app);
+require('./sockets');
 
-io.set('authorization', function (hsData, accept) {
-  if(hsData.headers.cookie) {
-    var cookie = parseCookie(hsData.headers.cookie)
-      , sid = cookie['balloons'];
 
-    sessionStore.load(sid, function(err, session) {
-      if(err || !session) {
-        return accept('Error retrieving session!', false);
-      }
+/*
+ * Catch uncaught exceptions
+ */
 
-      hsData.balloons = {
-        user: session.auth.user,
-        room: /\/rooms\/(?:([^\/]+?))\/?$/g.exec(hsData.headers.referer)[1]
-      };
-
-      return accept(null, true);
-      
-    });
-  } else {
-    return accept('No cookie transmitted.', false);
-  }
+process.on('uncaughtException', function(err){
+  console.log('Exception: ' + err.stack);
 });
-
-io.configure(function() {
-  io.set('store', new sio.RedisStore);
-  io.enable('browser client minification');
-  io.enable('browser client gzip');
-});
-
-
-io.sockets.on('connection', function (socket) {
-  var hs = socket.handshake
-    , nickname = hs.balloons.user.username
-    , room_id = hs.balloons.room
-    , now = new Date()
-    // Chat Log handler
-    , chatlogFileName = 'chats/' + room_id + (now.getFullYear()) + (now.getMonth() + 1) + (now.getDate()) + ".txt"
-    , chatlogWriteStream = fs.createWriteStream(chatlogFileName, {'flags': 'a'});
-
-  socket.join(room_id);
-
-  client.sadd('users:' + nickname + ':sockets', socket.id, function(err, socketAdded) {
-    if(socketAdded) {
-
-      client.sadd('socketio:sockets', socket.id);
-
-      client.sadd('rooms:' + room_id + ':online', nickname, function(err, userAdded) {
-        if(userAdded) {
-          client.get('users:' + nickname + ':status', function(err, status) {
-            io.sockets.in(room_id).emit('new user', {
-              nickname: nickname,
-              status: status || 'available'
-            });
-          });
-        }
-      });
-    }
-  });
-
-  socket.on('my msg', function(data) {
-    var no_empty = data.msg.replace("\n","");
-    if(no_empty.length > 0) {
-      var chatlogRegistry = {
-        type: 'message',
-        from: nickname,
-        atTime: new Date(),
-        withData: data.msg
-      }
-
-      chatlogWriteStream.write(JSON.stringify(chatlogRegistry) + "\n");
-      
-      io.sockets.in(room_id).emit('new msg', {
-        nickname: nickname,
-        msg: data.msg
-      });        
-    }   
-  });
-
-  socket.on('set status', function(data) {
-    var status = data.status;
-
-    client.set('users:' + nickname + ':status', status, function(err, statusSet) {
-      io.sockets.emit('user-info update', {
-        username: nickname,
-        status: status
-      });
-    });
-  });
-
-  socket.on('history request', function() {
-    var history = [];
-    var tail = require('child_process').spawn('tail', ['-n', 5, chatlogFileName]);
-    tail.stdout.on('data', function (data) {
-      var lines = data.toString('utf-8').split("\n");
-      
-      lines.forEach(function(line, index) {
-        if(line.length) {
-          var historyLine = JSON.parse(line);
-          history.push(historyLine);
-        }
-      });
-
-      socket.emit('history response', {
-        history: history
-      });
-    });
-  });
-
-  socket.on('disconnect', function() {
-    // 'sockets:at:' + room_id + ':for:' + nickname
-    client.srem('users:' + nickname + ':sockets', socket.id, function(err, removed) {
-      if(removed) {
-        client.srem('socketio:sockets', socket.id);
-
-        client.scard('users:' + nickname + ':sockets', function(err, members_no) {
-          if(!members_no) {
-            client.srem('rooms:' + room_id + ':online', nickname, function(err, removed) {
-              if (removed) {
-                chatlogWriteStream.destroySoon();
-                io.sockets.in(room_id).emit('user leave', {
-                  nickname: nickname
-                });
-              }
-            });
-          }
-        });
-      }
-    });
-  });
-});
-
-
-app.listen(config.app.port);
-
-console.log('Balloons.io started at port %d', app.address().port);
